@@ -26,6 +26,8 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+#define HL_KEYWORD(n) (HL_KEYWORD1 + n)
+
 enum editorKey {
     BACKSPACE = 127,
     ARROW_LEFT = 1000,
@@ -58,8 +60,7 @@ enum editorHighlight {
 struct editorSyntax {
     char *filetype;
     char **filematch;
-    char **keywords_primary;
-    char **keywords_secondary;
+    char ***keywords;
     char *singleline_comment_start;
     char *multiline_comment_start;
     char *multiline_comment_end;
@@ -106,12 +107,14 @@ char *C_HL_keywords_primary[] = {"switch", "if",       "while",   "for",
                                  "struct", "union",    "typedef", "static",
                                  "enum",   "class",    "case",    NULL};
 
-char *C_HL_keywords_secondary[] = {"int",    "long", "double",
-                                   "float",  "char", "unsigned",
-                                   "signed", "bool", "void", NULL};
+char *C_HL_keywords_secondary[] = {"int",  "long",     "double", "float",
+                                   "char", "unsigned", "signed", "bool",
+                                   "void", NULL};
 
-struct editorSyntax HLDB[] = {{"c", C_HL_extensions, C_HL_keywords_primary,
-                               C_HL_keywords_secondary, "//", "/*", "*/",
+char **C_HL_keywords[] = {C_HL_keywords_primary, C_HL_keywords_secondary, NULL};
+
+struct editorSyntax HLDB[] = {{"c", C_HL_extensions, C_HL_keywords, "//", "/*",
+                               "*/",
                                HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS}};
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
@@ -294,8 +297,7 @@ void editorUpdateSyntax(erow *row) {
         return;
     }
 
-    char **keywords_primary = E.syntax->keywords_primary;
-    char **keywords_secondary = E.syntax->keywords_secondary;
+    char ***keywords = E.syntax->keywords;
 
     char *scs = E.syntax->singleline_comment_start;
     char *mcs = E.syntax->multiline_comment_start;
@@ -378,33 +380,23 @@ void editorUpdateSyntax(erow *row) {
 
         if (prev_sep) {
             bool kw = false;
-            int p_idx = 0, s_idx = 0;
-            while (keywords_primary[p_idx] != NULL ||
-                   keywords_secondary[s_idx] != NULL) {
-                int p_len = keywords_primary[p_idx]
-                                ? strlen(keywords_primary[p_idx])
-                                : 0;
-                int s_len = keywords_secondary[s_idx]
-                                ? strlen(keywords_secondary[s_idx])
-                                : 0;
+            int group_idx = 0, word_idx = 0;
+            while (keywords[group_idx] != NULL) {
+                word_idx = 0;
+                while (keywords[group_idx][word_idx] != NULL) {
+                    int key_len = strlen(keywords[group_idx][word_idx]);
 
-                if (p_len > 0 &&
-                    !strncmp(&row->render[i], keywords_primary[p_idx++],
-                             p_len) &&
-                    is_separator(row->render[i + p_len])) {
-                    memset(&row->hl[i], HL_KEYWORD1, p_len);
-                    i += p_len;
-                    kw = true;
-                    break;
-                } else if (s_len > 0 &&
-                           !strncmp(&row->render[i],
-                                    keywords_secondary[s_idx++], s_len) &&
-                           is_separator(row->render[i + s_len])) {
-                    memset(&row->hl[i], HL_KEYWORD2, s_len);
-                    i += s_len;
-                    kw = true;
-                    break;
+                    if (!strncmp(&row->render[i], keywords[group_idx][word_idx],
+                                 key_len) &&
+                        is_separator(row->render[i + key_len])) {
+                        memset(&row->hl[i], HL_KEYWORD(group_idx), key_len);
+                        i += key_len;
+                        kw = true;
+                        break;
+                    }
+                    word_idx++;
                 }
+                group_idx++;
             }
             if (kw) {
                 prev_sep = false;
