@@ -22,7 +22,6 @@
 
 #define KILO_VERSION "0.0.1"
 #define KILO_TAB_STOP 4
-#define KILO_QUIT_TIMES 3
 #define REL_LINE_NUMS true
 
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -55,6 +54,22 @@ enum editorHighlight {
     HL_MATCH
 };
 
+typedef enum editorMode { NORMAL_MODE, INSERT_MODE, COMMAND_MODE } editorMode;
+
+typedef enum kiloCmd {
+    CMD_WRITE,
+    CMD_QUIT,
+    CMD_FORCEQUIT,
+    CMD_WRITEQUIT,
+    CMD_SEARCH,
+    CMD_GOTOLINE,
+    CMD_UNKNOWN
+} kiloCmd;
+
+#define NORMAL_MODE_STR "NORMAL"
+#define INSERT_MODE_STR "INSERT"
+#define COMMAND_MODE_STR "COMMAND"
+
 #define HL_HIGHLIGHT_NUMBERS (1 << 0)
 #define HL_HIGHLIGHT_STRINGS (1 << 1)
 
@@ -81,6 +96,7 @@ typedef struct erow {
 } erow;
 
 struct editorConfig {
+    editorMode mode;
     int cx, cy;
     int rx;
     int rowoff;
@@ -127,6 +143,7 @@ struct editorSyntax HLDB[] = {{"c", C_HL_extensions, C_HL_keywords, "//", "/*",
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback)(char *, int));
+char *modeString();
 
 /*** Terminal ***/
 
@@ -1009,9 +1026,9 @@ void editorDrawStatusBar(struct abuf *ab) {
     abAppend(ab, "\x1b[7m", 4); // inverted colors
 
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-                       E.filename ? E.filename : "[No Name]", E.numrows,
-                       E.dirty ? "(modified)" : "");
+    int len = snprintf(status, sizeof(status), "[%s] %.20s - %d lines %s",
+                       modeString(), E.filename ? E.filename : "[No Name]",
+                       E.numrows, E.dirty ? "(modified)" : "");
     int percent = ((float)E.cy / E.numrows) * 100;
     int rlen = snprintf(rstatus, sizeof(rstatus), "%s - %d%% - %d:%d",
                         E.syntax ? E.syntax->filetype : "no ft", percent,
@@ -1079,6 +1096,96 @@ void editorSetStatusMessage(const char *fmt, ...) {
     vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
     va_end(ap);
     E.statusmsg_time = time(NULL);
+}
+
+/*** Editor Mode ***/
+
+char *modeString() {
+    switch (E.mode) {
+    case NORMAL_MODE:
+        return NORMAL_MODE_STR;
+    case INSERT_MODE:
+        return INSERT_MODE_STR;
+    case COMMAND_MODE:
+        return COMMAND_MODE_STR;
+    default:
+        return "UNKNOWN";
+    }
+}
+
+kiloCmd inputToCmd(char *s) {
+    // write
+    if (!strncmp(s, "write", strlen(s))) {
+        return CMD_WRITE;
+    }
+    // quit
+    if (!strncmp(s, "quit", strlen(s))) {
+        return CMD_QUIT;
+    }
+    // write quit
+    if (!strncmp(s, "wq", strlen(s)) || !strncmp(s, "writequit", strlen(s))) {
+        return CMD_WRITEQUIT;
+    }
+    // force quit
+    if (!strncmp(s, "q!", strlen(s)) || !strncmp(s, "quit!", strlen(s))) {
+        return CMD_FORCEQUIT;
+    }
+    // find
+    if (!strncmp(s, "find", strlen(s))) {
+        return CMD_SEARCH;
+    }
+    // goto line
+    if (!strncmp(s, "goto", strlen(s))) {
+        return CMD_GOTOLINE;
+    }
+    return CMD_UNKNOWN;
+}
+
+void cmdModeCallback(char *s, int c) {
+    if (c == '\x1b') {
+        return;
+    } else if (c == '\r') {
+        editorSetStatusMessage("Would have tried to run [%s]", s);
+        // match each command in turn here...
+        kiloCmd cmd = inputToCmd(s);
+        switch (cmd) {
+        case CMD_WRITE:
+            editorSave();
+            break;
+
+        case CMD_QUIT:
+            if (E.dirty) {
+                editorSetStatusMessage("[WARNING] | File has unsaved changes.");
+                break;
+            }
+            // fall through
+
+        case CMD_FORCEQUIT:
+            write(STDOUT_FILENO, "\x1b[2J", 4); // clear entire screen
+            write(STDOUT_FILENO, "\x1b[H", 3);  // reset cursor position
+            exit(0);
+            break;
+
+        case CMD_WRITEQUIT:
+            editorSave();
+            write(STDOUT_FILENO, "\x1b[2J", 4); // clear entire screen
+            write(STDOUT_FILENO, "\x1b[H", 3);  // reset cursor position
+            exit(0);
+            break;
+
+        case CMD_SEARCH:
+            editorFind();
+            break;
+
+        case CMD_GOTOLINE:
+            editorGotoLine();
+            break;
+
+        case CMD_UNKNOWN:
+            editorSetStatusMessage("Unknown command");
+            break;
+        }
+    }
 }
 
 /*** Input ***/
@@ -1178,31 +1285,12 @@ void editorMoveCursor(int key) {
     }
 }
 
-void editorProcessKeypress() {
-    static int quit_times = KILO_QUIT_TIMES;
-
-    int c = editorReadKey();
-
+void editorProcessKeyInsertNormal(int c) {
     switch (c) {
     case '\r':
-        editorInsertNewline();
-        break;
-
-    case CTRL_KEY('q'):
-        if (E.dirty && quit_times > 0) {
-            editorSetStatusMessage("[WARNING] | File has unsaved changes. "
-                                   "Press Ctrl-q %d more times to quit.",
-                                   quit_times);
-            quit_times--;
-            return;
+        if (E.mode == INSERT_MODE) {
+            editorInsertNewline();
         }
-        write(STDOUT_FILENO, "\x1b[2J", 4); // clear entire screen
-        write(STDOUT_FILENO, "\x1b[H", 3);  // reset cursor position
-        exit(0);
-        break;
-
-    case CTRL_KEY('s'):
-        editorSave();
         break;
 
     case HOME_KEY:
@@ -1214,20 +1302,15 @@ void editorProcessKeypress() {
         }
         break;
 
-    case CTRL_KEY('f'):
-        editorFind();
-        break;
-
-    case CTRL_KEY('g'):
-        editorGotoLine();
-        break;
     case BACKSPACE:
     case CTRL_KEY('h'):
     case DEL_KEY:
-        if (c == DEL_KEY) {
-            editorMoveCursor(ARROW_RIGHT);
+        if (E.mode == INSERT_MODE) {
+            if (c == DEL_KEY) {
+                editorMoveCursor(ARROW_RIGHT);
+            }
+            editorDelChar();
         }
-        editorDelChar();
         break;
 
     case PAGE_UP:
@@ -1254,20 +1337,52 @@ void editorProcessKeypress() {
         break;
     case CTRL_KEY('l'):
     case '\x1b':
+        E.mode = NORMAL_MODE;
         break;
+
+    case 'i':
+        if (E.mode == NORMAL_MODE) {
+            E.mode = INSERT_MODE;
+            break;
+        }
+        // fall through
+
+    case ':':
+        if (E.mode == NORMAL_MODE) {
+            E.mode = COMMAND_MODE;
+            editorPrompt(":%s", cmdModeCallback);
+            E.mode = NORMAL_MODE;
+            break;
+        }
+        // fall through
 
     default:
-        editorInsertChar(c);
+        if (E.mode == INSERT_MODE) {
+            editorInsertChar(c);
+        }
         break;
     }
+}
 
-    quit_times = KILO_QUIT_TIMES;
+void editorProcessKeypress() {
+
+    int c = editorReadKey();
+
+    switch (E.mode) {
+    case NORMAL_MODE:
+    case INSERT_MODE:
+        editorProcessKeyInsertNormal(c);
+        break;
+    case COMMAND_MODE:
+        // this is all handled inside editorProcessKeyInsertNormal()
+        break;
+    }
 }
 
 /*** Init ***/
 
 void initEditor() {
-    E.cx = 0;
+    E.mode = NORMAL_MODE, E.cx = 0;
     E.cy = 0;
     E.rx = 0;
     E.rowoff = 0;
@@ -1295,8 +1410,8 @@ int main(int argc, char *argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-f = "
-                           "find | Ctrl-g = Goto line");
+    editorSetStatusMessage(
+        "HELP: :w[rite], :q[uit], :q[uit]!, :wq, :f[ind], :g[oto]");
 
     while (true) {
         editorRefreshScreen();
