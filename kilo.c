@@ -23,10 +23,13 @@
 #define KILO_VERSION "0.0.1"
 #define KILO_TAB_STOP 4
 #define KILO_QUIT_TIMES 3
+#define REL_LINE_NUMS true
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 #define HL_KEYWORD(n) (HL_KEYWORD1 + n)
+
+#define MAX(a, b) (a >= b ? (a) : (b))
 
 enum editorKey {
     BACKSPACE = 127,
@@ -85,6 +88,8 @@ struct editorConfig {
     int screenrows;
     int screencols;
     int numrows;
+    int max_line_num_len;
+    bool rel_line_num;
     erow *row;
     bool dirty;
     char *filename;
@@ -99,8 +104,6 @@ struct editorConfig E;
 /*** Filetypes ***/
 
 char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
-
-// TODO: Make fully general with n groups
 
 char *C_HL_keywords_primary[] = {"switch", "if",       "while",   "for",
                                  "break",  "continue", "return",  "else",
@@ -283,11 +286,14 @@ bool is_separator(int c) {
 }
 
 void editorUpdateSyntax(erow *row) {
+    if (row->rsize <= 0) {
+        return;
+    }
     unsigned char *newhl = (unsigned char *)realloc(row->hl, row->rsize);
     if (newhl != NULL) {
         row->hl = newhl;
     } else {
-        editorSetStatusMessage("[ERROR] | (%s) Allocation failed!", __func__);
+        editorSetStatusMessage("[ERROR] (%s) | Allocation failed!", __func__);
         return;
     }
 
@@ -466,6 +472,8 @@ void editorSelectSyntaxHighlight() {
 /*** Row Operations ***/
 
 int editorRowCxToRx(erow *row, int cx) {
+    int offset = E.max_line_num_len + 1;
+
     int rx = 0;
     for (int j = 0; j < cx; j++) {
         if (row->chars[j] == '\t') {
@@ -474,10 +482,11 @@ int editorRowCxToRx(erow *row, int cx) {
         rx++;
     }
 
-    return rx;
+    return rx + offset;
 }
 
 int editorRowRxToCx(erow *row, int rx) {
+    int offset = E.max_line_num_len + 1;
     int cur_rx = 0;
     int cx;
     for (cx = 0; cx < row->size; cx++) {
@@ -487,11 +496,11 @@ int editorRowRxToCx(erow *row, int rx) {
         cur_rx++;
 
         if (cur_rx > rx) {
-            return cx;
+            return MAX(cx - offset, 0);
         }
     }
 
-    return cx;
+    return MAX(cx - offset, 0);
 }
 
 void editorUpdateRow(erow *row) {
@@ -847,7 +856,7 @@ void abFree(struct abuf *ab) { free(ab->b); }
 /*** Output ***/
 
 void editorScroll() {
-    E.rx = 0;
+    E.rx = E.max_line_num_len + 1;
     if (E.cy < E.numrows) {
         E.rx = editorRowCxToRx(&E.row[E.cy], E.cx);
     }
@@ -866,7 +875,7 @@ void editorScroll() {
     }
 }
 
-void editorDrawRows(struct abuf *ab) {
+void editorDrawRows(struct abuf *ab, int row_idx) {
     for (int y = 0; y < E.screenrows; y++) {
         int filerow = y + E.rowoff;
         if (filerow >= E.numrows) {
@@ -891,12 +900,36 @@ void editorDrawRows(struct abuf *ab) {
                 abAppend(ab, "~", 1);
             }
         } else {
+            // Draw line number
+            char buf[8];
+
+            abAppend(ab, "\x1b[7m", 4); // inverted colors
+
+            // TODO: Clean up line calculation here...
+            int num;
+            if (E.rel_line_num) {
+                if (filerow == row_idx) {
+                    num = filerow + 1;
+                } else {
+                    num = abs(filerow - row_idx);
+                }
+            } else {
+                num = filerow + 1;
+            }
+            int num_len = snprintf(buf, 8, "%*d ", E.max_line_num_len, num);
+            if (num_len > 0 && num_len < 8) {
+                abAppend(ab, buf, num_len);
+            } else {
+                abAppend(ab, "?", 1);
+            }
+            abAppend(ab, "\x1b[m", 3); // back to normal formatting
+
             int len = E.row[filerow].rsize - E.coloff;
             if (len < 0) {
                 len = 0;
             }
-            if (len > E.screencols) {
-                len = E.screencols;
+            if (len > (E.screencols - E.max_line_num_len - 1)) {
+                len = E.screencols - E.max_line_num_len - 1;
             }
             char *c = &E.row[filerow].render[E.coloff];
             unsigned char *hl = &E.row[filerow].hl[E.coloff];
@@ -984,14 +1017,17 @@ void editorDrawMessageBar(struct abuf *ab) {
 }
 
 void editorRefreshScreen() {
+    E.max_line_num_len = snprintf(NULL, 0, "%d", E.numrows);
+
     editorScroll();
 
     struct abuf ab = ABUF_INIT;
 
+    int row_idx = E.cy + E.rowoff;
     abAppend(&ab, "\x1b[?25l", 6); // hide cursor
     abAppend(&ab, "\x1b[H", 3);    // reset cursor position
 
-    editorDrawRows(&ab);
+    editorDrawRows(&ab, row_idx);
     editorDrawStatusBar(&ab);
     editorDrawMessageBar(&ab);
 
@@ -1077,7 +1113,7 @@ void editorMoveCursor(int key) {
 
     switch (key) {
     case ARROW_LEFT:
-        if (E.cx != 0) {
+        if (E.cx > 0) {
             E.cx--;
         } else if (E.cy > 0) {
             E.cy--;
@@ -1205,6 +1241,8 @@ void initEditor() {
     E.numrows = 0;
     E.row = NULL;
     E.row = false;
+    E.max_line_num_len = 0;
+    E.rel_line_num = REL_LINE_NUMS;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
