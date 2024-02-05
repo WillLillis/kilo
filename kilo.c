@@ -1285,12 +1285,10 @@ void editorMoveCursor(int key) {
     }
 }
 
-void editorProcessKeyInsertNormal(int c) {
+void editorProcessKeyInsert(int c) {
     switch (c) {
     case '\r':
-        if (E.mode == INSERT_MODE) {
-            editorInsertNewline();
-        }
+        editorInsertNewline();
         break;
 
     case HOME_KEY:
@@ -1305,12 +1303,10 @@ void editorProcessKeyInsertNormal(int c) {
     case BACKSPACE:
     case CTRL_KEY('h'):
     case DEL_KEY:
-        if (E.mode == INSERT_MODE) {
-            if (c == DEL_KEY) {
-                editorMoveCursor(ARROW_RIGHT);
-            }
-            editorDelChar();
+        if (c == DEL_KEY) {
+            editorMoveCursor(ARROW_RIGHT);
         }
+        editorDelChar();
         break;
 
     case PAGE_UP:
@@ -1340,26 +1336,124 @@ void editorProcessKeyInsertNormal(int c) {
         E.mode = NORMAL_MODE;
         break;
 
-    case 'i':
-        if (E.mode == NORMAL_MODE) {
-            E.mode = INSERT_MODE;
-            break;
-        }
-        // fall through
-
-    case ':':
-        if (E.mode == NORMAL_MODE) {
-            E.mode = COMMAND_MODE;
-            editorPrompt(":%s", cmdModeCallback);
-            E.mode = NORMAL_MODE;
-            break;
-        }
-        // fall through
-
     default:
         if (E.mode == INSERT_MODE) {
             editorInsertChar(c);
         }
+        break;
+    }
+}
+
+void editorProcessKeyNormal(int c) {
+    switch (c) {
+    case '\r':
+        editorMoveCursor(ARROW_DOWN);
+        break;
+
+    case HOME_KEY:
+        E.cx = 0;
+        break;
+    case END_KEY:
+        if (E.cy < E.numrows) {
+            E.cx = E.row[E.cy].size;
+        }
+        break;
+
+    case BACKSPACE:
+        editorMoveCursor(ARROW_LEFT);
+        break;
+
+    case DEL_KEY:
+        break;
+
+    case PAGE_UP:
+    case PAGE_DOWN: {
+        if (c == PAGE_UP) {
+            E.cy = E.rowoff;
+        } else if (c == PAGE_DOWN) {
+            E.cy = E.rowoff + E.screenrows - 1;
+            if (E.cy > E.numrows) {
+                E.cy = E.numrows;
+            }
+        }
+        int times = E.screenrows;
+        while (times--) {
+            editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+        }
+        break;
+    }
+    case ARROW_LEFT:
+    case ARROW_RIGHT:
+    case ARROW_UP:
+    case ARROW_DOWN:
+        editorMoveCursor(c);
+        break;
+    case CTRL_KEY('l'):
+    case '\x1b':
+        break;
+
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
+        // TODO
+        break;
+
+    case 'h':
+        editorMoveCursor(ARROW_LEFT);
+        break;
+    case 'j':
+        editorMoveCursor(ARROW_DOWN);
+        break;
+    case 'k':
+        editorMoveCursor(ARROW_UP);
+        break;
+    case 'l':
+        editorMoveCursor(ARROW_RIGHT);
+        break;
+
+    case 'b': {
+        // move cursor right until
+        // separator is encountered
+        int old_y = E.cy;
+        do {
+            editorMoveCursor(ARROW_LEFT);
+        } while (!is_separator(E.row[E.cy].chars[E.cx]) && old_y == E.cy);
+        break;
+    }
+    case 'w': {
+        // move cursor right until
+        // separator is encountered
+        int old_y = E.cy;
+        do {
+            editorMoveCursor(ARROW_RIGHT);
+        } while (!is_separator(E.row[E.cy].chars[E.cx]) && old_y == E.cy);
+        break;
+    }
+
+    case 'o':
+        E.cx = E.row[E.cy].size;
+        editorInsertNewline();
+        E.mode = INSERT_MODE;
+        break;
+
+    case 'i':
+        E.mode = INSERT_MODE;
+        break;
+
+    case ':':
+        E.mode = COMMAND_MODE;
+        editorPrompt(":%s", cmdModeCallback);
+        E.mode = NORMAL_MODE;
+        break;
+
+    default:
         break;
     }
 }
@@ -1370,11 +1464,13 @@ void editorProcessKeypress() {
 
     switch (E.mode) {
     case NORMAL_MODE:
+        editorProcessKeyNormal(c);
+        break;
     case INSERT_MODE:
-        editorProcessKeyInsertNormal(c);
+        editorProcessKeyInsert(c);
         break;
     case COMMAND_MODE:
-        // this is all handled inside editorProcessKeyInsertNormal()
+        // this is all handled inside editorProcessKeyNormal()
         break;
     }
 }

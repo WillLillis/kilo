@@ -8,3 +8,5 @@ guide
 
 - Line numbers (Normal and relative)
 - Go to line number command
+- Normal, Insert, and Command editor modes
+- A few basic Vim motions
