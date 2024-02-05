@@ -830,6 +830,38 @@ void editorFind() {
     }
 }
 
+/*** Go To Line ***/ 
+
+void editorGotoLine() {
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_coloff = E.coloff;
+    int saved_rowoff = E.rowoff;
+
+    char *line =
+        editorPrompt("Goto Line #: %s", NULL);
+    if (line == NULL) {
+        editorSetStatusMessage("Goto operation aborted");
+        return;
+    }
+
+    if (line != NULL) {
+        int target_line = atoi(line);
+        if (target_line >= 1 && target_line <= E.numrows) {
+            E.rowoff = E.numrows;
+            E.cy = target_line - 1;
+        } else {
+            editorSetStatusMessage("Invalid line number");
+        }
+        free(line);
+    } else {
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.coloff = saved_coloff;
+        E.rowoff = saved_rowoff;
+    }
+}
+
 /*** Append Buffer ***/
 
 struct abuf {
@@ -905,7 +937,6 @@ void editorDrawRows(struct abuf *ab, int row_idx) {
 
             abAppend(ab, "\x1b[7m", 4); // inverted colors
 
-            // TODO: Clean up line calculation here...
             int num;
             if (E.rel_line_num) {
                 if (filerow == row_idx) {
@@ -1023,7 +1054,7 @@ void editorRefreshScreen() {
 
     struct abuf ab = ABUF_INIT;
 
-    int row_idx = E.cy + E.rowoff;
+    int row_idx = E.cy;
     abAppend(&ab, "\x1b[?25l", 6); // hide cursor
     abAppend(&ab, "\x1b[H", 3);    // reset cursor position
 
@@ -1187,6 +1218,9 @@ void editorProcessKeypress() {
         editorFind();
         break;
 
+    case CTRL_KEY('g'):
+        editorGotoLine();
+        break;
     case BACKSPACE:
     case CTRL_KEY('h'):
     case DEL_KEY:
