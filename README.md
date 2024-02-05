@@ -10,3 +10,4 @@ guide.
 - Go to line number command
 - Normal, Insert, and Command editor modes
 - A few basic Vim motions
+- Simple Undo/Redo functionality

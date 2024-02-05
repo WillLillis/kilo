@@ -63,6 +63,8 @@ typedef enum kiloCmd {
     CMD_WRITEQUIT,
     CMD_SEARCH,
     CMD_GOTOLINE,
+    CMD_UNDO,
+    CMD_REDO,
     CMD_UNKNOWN
 } kiloCmd;
 
@@ -98,7 +100,6 @@ typedef struct erow {
 typedef struct editorState {
     struct editorState *prev;
     struct editorState *next;
-    editorMode mode;
     int cx, cy;
     int rx;
     int rowoff;
@@ -112,6 +113,7 @@ struct editorConfig {
     int screenrows;
     int screencols;
     struct editorState *curr_state;
+    editorMode mode;
     bool rel_line_num;
     bool dirty;
     char *filename;
@@ -1124,7 +1126,7 @@ void editorSetStatusMessage(const char *fmt, ...) {
 /*** Editor Mode ***/
 
 char *modeString() {
-    switch (E.curr_state->mode) {
+    switch (E.mode) {
     case NORMAL_MODE:
         return NORMAL_MODE_STR;
     case INSERT_MODE:
@@ -1157,6 +1159,14 @@ kiloCmd inputToCmd(char *s) {
     if (!strncmp(s, "find", strlen(s))) {
         return CMD_SEARCH;
     }
+    // undo
+    if (!strncmp(s, "undo", strlen(s))) {
+        return CMD_UNDO;
+    }
+    // redo
+    if (!strncmp(s, "redo", strlen(s))) {
+        return CMD_REDO;
+    }
     // goto line
     if (!strncmp(s, "goto", strlen(s))) {
         return CMD_GOTOLINE;
@@ -1168,7 +1178,6 @@ void cmdModeCallback(char *s, int c) {
     if (c == '\x1b') {
         return;
     } else if (c == '\r') {
-        editorSetStatusMessage("Would have tried to run [%s]", s);
         // match each command in turn here...
         kiloCmd cmd = inputToCmd(s);
         switch (cmd) {
@@ -1202,6 +1211,14 @@ void cmdModeCallback(char *s, int c) {
 
         case CMD_GOTOLINE:
             editorGotoLine();
+            break;
+
+        case CMD_UNDO:
+            gotoPrevState();
+            break;
+
+        case CMD_REDO:
+            gotoNextState();
             break;
 
         case CMD_UNKNOWN:
@@ -1363,7 +1380,7 @@ void editorProcessKeyInsert(int c) {
         break;
     case CTRL_KEY('l'):
     case '\x1b':
-        E.curr_state->mode = NORMAL_MODE;
+        E.mode = NORMAL_MODE;
         break;
 
     default:
@@ -1483,17 +1500,17 @@ void editorProcessKeyNormal(int c) {
         newState();
         E.curr_state->cx = E.curr_state->row[E.curr_state->cy].size;
         editorInsertNewline();
-        E.curr_state->mode = INSERT_MODE;
+        E.mode = INSERT_MODE;
         break;
 
     case 'i':
-        E.curr_state->mode = INSERT_MODE;
+        E.mode = INSERT_MODE;
         break;
 
     case ':':
-        E.curr_state->mode = COMMAND_MODE;
+        E.mode = COMMAND_MODE;
         editorPrompt(":%s", cmdModeCallback);
-        E.curr_state->mode = NORMAL_MODE;
+        E.mode = NORMAL_MODE;
         break;
 
     default:
@@ -1505,7 +1522,7 @@ void editorProcessKeypress() {
 
     int c = editorReadKey();
 
-    switch (E.curr_state->mode) {
+    switch (E.mode) {
     case NORMAL_MODE:
         editorProcessKeyNormal(c);
         break;
@@ -1520,81 +1537,42 @@ void editorProcessKeypress() {
 
 /*** Editor State ***/
 
-void dbgPrintState(editorState *state) {
-    if (state == NULL) {
-        return;
-    }
-    editorSetStatusMessage("prev: %p", (void *)state->prev);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("next: %p", (void *)state->next);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("mode: %d", state->mode);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("cx: %d, cy: %d", state->cx, state->cy);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("rx: %d", state->rx);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("rowoff: %d", state->rowoff);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("coloff: %d", state->coloff);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("numrows: %d", state->numrows);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("max_line_num_len: %d", state->max_line_num_len);
-    editorRefreshScreen();
-    sleep(2);
-    editorSetStatusMessage("row: %p", (void *)state->row);
-    editorRefreshScreen();
-    sleep(2);
-}
-
 erow *erowCopy(erow *row) {
-    erow *new_row = (erow *)malloc(sizeof(erow));
+    erow *new_row = (erow *)malloc(sizeof(erow) * E.curr_state->numrows);
     if (new_row == NULL) {
         return NULL;
     }
+    for (int i = 0; i < E.curr_state->numrows; i++) {
+        memcpy(&new_row[i], &row[i], sizeof(erow));
+        new_row[i].chars = NULL;
+        new_row[i].render = NULL;
+        new_row[i].hl = NULL;
 
-    memcpy(new_row, row, sizeof(erow));
-    new_row->chars = NULL;
-    new_row->render = NULL;
-    new_row->hl = NULL;
+        new_row[i].chars = (char *)malloc(row[i].size + 1);
+        if (new_row[i].chars == NULL) {
+            // TODO -- cleanup policy on failure
+            return NULL;
+        }
 
-    new_row->chars = (char *)malloc(row->size + 1);
-    if (new_row->chars == NULL) {
-        free(new_row);
-        return NULL;
-    }
+        new_row[i].render = (char *)malloc(row[i].rsize);
+        if (new_row[i].render == NULL) {
+            return NULL;
+        }
 
-    new_row->render = (char *)malloc(row->rsize);
-    if (new_row->render == NULL) {
-        free(new_row->chars);
-        free(new_row);
-        return NULL;
-    }
+        new_row[i].hl = (unsigned char *)malloc(row[i].rsize);
+        if (new_row[i].hl == NULL) {
+            return NULL;
+        }
 
-    new_row->hl = (unsigned char *)malloc(row->rsize);
-    if (new_row->hl == NULL) {
-        free(new_row->render);
-        free(new_row->chars);
-        free(new_row);
-        return NULL;
-    }
-
-    if (row->size > 0) {
-        memcpy(new_row->chars, row->chars, row->size);
-        new_row->chars[row->size] = '\0';
-    }
-    if (row->rsize > 0) {
-        memcpy(new_row->render, row->render, row->rsize);
-        memcpy(new_row->hl, row->hl, row->rsize);
+        // BUGBUG are these checks necessary?
+        if (row[i].size > 0) {
+            memcpy(new_row[i].chars, row[i].chars, row[i].size + 1);
+            // new_row->chars[row->size] = '\0';
+        }
+        if (row[i].rsize > 0) {
+            memcpy(new_row[i].render, row[i].render, row[i].rsize);
+            memcpy(new_row[i].hl, row[i].hl, row[i].rsize);
+        }
     }
 
     return new_row;
@@ -1622,27 +1600,27 @@ editorState *stateCopy(editorState *state) {
 
 // Appends a new state to the global linked list
 bool newState() {
-    //  create deep copy of old state
     editorState *new_state = stateCopy(E.curr_state);
     if (new_state == NULL) {
         editorSetStatusMessage("[ERROR] | (%s) Allocation failed", __func__);
         return false;
     }
 
+    editorState *old_next = E.curr_state->next;
+    // clean up the old child branch
+    if (old_next != NULL) {
+        editorState *next = old_next->next;
+        for (int i = 0; i < old_next->numrows; i++) {
+            editorFreeRow(&old_next->row[i]);
+        }
+        free(old_next);
+        old_next = next;
+    }
+
     E.curr_state->next = new_state;
     new_state->prev = E.curr_state;
     new_state->next = NULL;
-    // editorSetStatusMessage("new_state->prev: %p, curr state: %p",
-    // new_state->prev,
-    //                        E.curr_state);
-    // dbgPrintState(new_state);
-    // editorRefreshScreen();
-    // sleep(5);
     E.curr_state = new_state;
-    // E.curr_state = E.curr_state;
-    //  editorSetStatusMessage("This will never print");
-    //  editorRefreshScreen();
-    //  sleep(5);
 
     return true;
 }
@@ -1670,7 +1648,6 @@ void initEditor() {
     if (state == NULL) {
         die("Allocation failed");
     }
-    state->mode = NORMAL_MODE;
     state->cx = 0;
     state->cy = 0;
     state->rx = 0;
@@ -1683,6 +1660,7 @@ void initEditor() {
     state->next = NULL;
 
     E.curr_state = state;
+    E.mode = NORMAL_MODE;
     E.rel_line_num = REL_LINE_NUMS;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
@@ -1702,8 +1680,8 @@ int main(int argc, char *argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage(
-        "HELP: :w[rite], :q[uit], :q[uit]!, :wq, :f[ind], :g[oto]");
+    editorSetStatusMessage("HELP: :w[rite], :q[uit], :q[uit]!, :wq, :f[ind], "
+                           ":g[oto], :u[ndo], :r[edo]");
 
     while (true) {
         editorRefreshScreen();
