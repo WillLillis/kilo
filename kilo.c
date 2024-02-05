@@ -830,7 +830,7 @@ void editorFind() {
     }
 }
 
-/*** Go To Line ***/ 
+/*** Go To Line ***/
 
 void editorGotoLine() {
     int saved_cx = E.cx;
@@ -838,8 +838,7 @@ void editorGotoLine() {
     int saved_coloff = E.coloff;
     int saved_rowoff = E.rowoff;
 
-    char *line =
-        editorPrompt("Goto Line #: %s", NULL);
+    char *line = editorPrompt("Goto Line #: %s", NULL);
     if (line == NULL) {
         editorSetStatusMessage("Goto operation aborted");
         return;
@@ -1295,8 +1294,8 @@ int main(int argc, char *argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage(
-        "HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-f = find");
+    editorSetStatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-f = "
+                           "find | Ctrl-g = Goto line");
 
     while (true) {
         editorRefreshScreen();
